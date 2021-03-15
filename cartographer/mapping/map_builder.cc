@@ -17,6 +17,7 @@
 #include "cartographer/mapping/map_builder.h"
 
 #include "absl/memory/memory.h"
+#include "absl/types/optional.h"
 #include "cartographer/common/time.h"
 #include "cartographer/io/internal/mapping_state_serialization.h"
 #include "cartographer/io/proto_stream.h"
@@ -28,6 +29,7 @@
 #include "cartographer/mapping/internal/3d/pose_graph_3d.h"
 #include "cartographer/mapping/internal/collated_trajectory_builder.h"
 #include "cartographer/mapping/internal/global_trajectory_builder.h"
+#include "cartographer/mapping/internal/motion_filter.h"
 #include "cartographer/sensor/internal/collator.h"
 #include "cartographer/sensor/internal/trajectory_collator.h"
 #include "cartographer/sensor/internal/voxel_filter.h"
@@ -72,24 +74,6 @@ void MaybeAddPureLocalizationTrimmer(
 
 }  // namespace
 
-proto::MapBuilderOptions CreateMapBuilderOptions(
-    common::LuaParameterDictionary* const parameter_dictionary) {
-  proto::MapBuilderOptions options;
-  options.set_use_trajectory_builder_2d(
-      parameter_dictionary->GetBool("use_trajectory_builder_2d"));
-  options.set_use_trajectory_builder_3d(
-      parameter_dictionary->GetBool("use_trajectory_builder_3d"));
-  options.set_num_background_threads(
-      parameter_dictionary->GetNonNegativeInt("num_background_threads"));
-  options.set_collate_by_trajectory(
-      parameter_dictionary->GetBool("collate_by_trajectory"));
-  *options.mutable_pose_graph_options() = CreatePoseGraphOptions(
-      parameter_dictionary->GetDictionary("pose_graph").get());
-  CHECK_NE(options.use_trajectory_builder_2d(),
-           options.use_trajectory_builder_3d());
-  return options;
-}
-
 MapBuilder::MapBuilder(const proto::MapBuilderOptions& options)
     : options_(options), thread_pool_(options.num_background_threads()) {
   CHECK(options.use_trajectory_builder_2d() ^
@@ -120,6 +104,14 @@ int MapBuilder::AddTrajectoryBuilder(
     const proto::TrajectoryBuilderOptions& trajectory_options,
     LocalSlamResultCallback local_slam_result_callback) {
   const int trajectory_id = trajectory_builders_.size();
+
+  absl::optional<MotionFilter> pose_graph_odometry_motion_filter;
+  if (trajectory_options.has_pose_graph_odometry_motion_filter()) {
+    LOG(INFO) << "Using a motion filter for adding odometry to the pose graph.";
+    pose_graph_odometry_motion_filter.emplace(
+        MotionFilter(trajectory_options.pose_graph_odometry_motion_filter()));
+  }
+
   if (options_.use_trajectory_builder_3d()) {
     std::unique_ptr<LocalTrajectoryBuilder3D> local_trajectory_builder;
     if (trajectory_options.has_trajectory_builder_3d_options()) {
@@ -134,7 +126,7 @@ int MapBuilder::AddTrajectoryBuilder(
         CreateGlobalTrajectoryBuilder3D(
             std::move(local_trajectory_builder), trajectory_id,
             static_cast<PoseGraph3D*>(pose_graph_.get()),
-            local_slam_result_callback)));
+            local_slam_result_callback, pose_graph_odometry_motion_filter)));
   } else {
     std::unique_ptr<LocalTrajectoryBuilder2D> local_trajectory_builder;
     if (trajectory_options.has_trajectory_builder_2d_options()) {
@@ -149,7 +141,7 @@ int MapBuilder::AddTrajectoryBuilder(
         CreateGlobalTrajectoryBuilder2D(
             std::move(local_trajectory_builder), trajectory_id,
             static_cast<PoseGraph2D*>(pose_graph_.get()),
-            local_slam_result_callback)));
+            local_slam_result_callback, pose_graph_odometry_motion_filter)));
   }
   MaybeAddPureLocalizationTrimmer(trajectory_id, trajectory_options,
                                   pose_graph_.get());
@@ -367,7 +359,7 @@ std::map<int, int> MapBuilder::LoadState(
 
   if (load_frozen_state) {
     // Add information about which nodes belong to which submap.
-    // Required for 3D pure localization.
+    // This is required, even without constraints.
     for (const proto::PoseGraph::Constraint& constraint_proto :
          pose_graph_proto.constraint()) {
       if (constraint_proto.tag() !=
@@ -402,6 +394,11 @@ std::map<int, int> MapBuilder::LoadStateFromFile(
   LOG(INFO) << "Loading saved state '" << state_filename << "'...";
   io::ProtoStreamReader stream(state_filename);
   return LoadState(&stream, load_frozen_state);
+}
+
+std::unique_ptr<MapBuilderInterface> CreateMapBuilder(
+    const proto::MapBuilderOptions& options) {
+  return absl::make_unique<MapBuilder>(options);
 }
 
 }  // namespace mapping

@@ -14,21 +14,15 @@
  * limitations under the License.
  */
 
-#ifndef CARTOGRAPHER_COMMON_UTILS_H_
-#define CARTOGRAPHER_COMMON_UTILS_H_
+#include "cartographer/mapping/internal/eigen_quaterniond_from_two_vectors.h"
 
 namespace cartographer {
-namespace common {
+namespace mapping {
 
-template <typename MapType, typename KeyType = typename MapType::key_type,
-          typename ValueType = typename MapType::mapped_type>
-ValueType* FindOrNull(MapType& map, const KeyType& key) {
-  auto it = map.find(key);
-  if (it == map.end()) return nullptr;
-  return &(it->second);
+Eigen::Quaterniond FromTwoVectors(const Eigen::Vector3d& a,
+                                  const Eigen::Vector3d& b) {
+  return Eigen::Quaterniond::FromTwoVectors(a, b);
 }
 
-}  // namespace common
+}  // namespace mapping
 }  // namespace cartographer
-
-#endif  // CARTOGRAPHER_COMMON_UTILS_H_
